@@ -25,17 +25,22 @@ const adminRoutes = require('./routes/admin');
 const app = express();
 const server = http.createServer(app);
 
+// Dynamic CORS configurations
+const allowedOrigins = process.env.FRONTEND_URL
+  ? [process.env.FRONTEND_URL, 'http://localhost:5173', 'http://localhost:5174']
+  : ['http://localhost:5173', 'http://localhost:5174'];
+
 // Socket.io setup
 const io = new Server(server, {
   cors: {
-    origin: ['http://localhost:5173', 'http://localhost:5174'],
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
   },
 });
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:5174'],
+  origin: allowedOrigins,
   credentials: true,
 }));
 app.use(express.json());
@@ -101,17 +106,23 @@ const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {
   try {
-    // Create database if not exists
-    const mysql = require('mysql2/promise');
-    const connection = await mysql.createConnection({
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-    });
-    await connection.query(`CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME}\`;`);
-    await connection.end();
-    console.log('📦 Database ensured');
+    // Create database if not exists (only if DB_HOST is provided and not using DATABASE_URL)
+    if (!process.env.DATABASE_URL && process.env.DB_HOST && process.env.DB_NAME) {
+      try {
+        const mysql = require('mysql2/promise');
+        const connection = await mysql.createConnection({
+          host: process.env.DB_HOST,
+          port: process.env.DB_PORT,
+          user: process.env.DB_USER,
+          password: process.env.DB_PASSWORD,
+        });
+        await connection.query(`CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME}\`;`);
+        await connection.end();
+        console.log('📦 Database ensured');
+      } catch (dbErr) {
+        console.log('⚠️ Database pre-creation skipped or not supported (will rely on direct connection):', dbErr.message);
+      }
+    }
 
     await sequelize.authenticate();
     console.log('✅ MySQL connected successfully.');
@@ -133,4 +144,8 @@ const startServer = async () => {
   }
 };
 
-startServer();
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = app;

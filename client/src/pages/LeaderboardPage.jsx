@@ -41,7 +41,7 @@ const LeaderboardPage = () => {
 
             <div className="lb-user-info">
               <div className="lb-avatar">
-                {user.profilePicture ? <img src={`http://localhost:5000${user.profilePicture}`} /> : user.fullName[0].toUpperCase()}
+                {user.profilePicture ? <img src={`${window.BASE_URL}${user.profilePicture}`} /> : user.fullName[0].toUpperCase()}
               </div>
               <div>
                 <h3>{user.fullName} {user.isVerified && <CheckCircle size={14} className="lb-verified"/>}</h3>

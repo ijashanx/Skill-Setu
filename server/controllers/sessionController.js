@@ -2,6 +2,7 @@ const { Op } = require('sequelize');
 const {
   SessionRequest, Session, User, Skill, Wallet, Transaction, Notification, Message, Rating,
 } = require('../models');
+const { sendSessionRequestEmail, sendSessionCompletedEmail, sendCreditsEarnedEmail } = require('../utils/emailService');
 
 const calculateCredits = (duration, isMentorSession) => {
   const baseRate = isMentorSession ? 2 : 1;
@@ -51,6 +52,9 @@ const createRequest = async (req, res) => {
       message: `${sender.fullName} wants to learn ${topic} from you`,
       linkTo: '/requests',
     });
+
+    // Send Session Request Email
+    await sendSessionRequestEmail(receiver.email, receiver.fullName, sender.fullName, topic);
 
     res.status(201).json({ message: 'Session request sent', request });
   } catch (error) {
@@ -136,7 +140,7 @@ const acceptRequest = async (req, res) => {
 
     await Message.create({
       sessionId: session.id,
-      senderId: 0,
+      senderId: req.userId,
       content: `Session created! Topic: ${request.topic}. Scheduled for ${new Date(request.scheduledDate).toLocaleString()}. Duration: ${request.duration} minutes.`,
       type: 'system',
     });
@@ -223,7 +227,7 @@ const startSession = async (req, res) => {
     session.startTime = new Date();
     await session.save();
 
-    await Message.create({ sessionId: session.id, senderId: 0, content: 'Session has started! Timer is running.', type: 'system' });
+    await Message.create({ sessionId: session.id, senderId: req.userId, content: 'Session has started! Timer is running.', type: 'system' });
     res.json({ message: 'Session started', session });
   } catch (error) {
     console.error('StartSession error:', error);
@@ -252,7 +256,39 @@ const completeSession = async (req, res) => {
     await User.increment({ totalHoursTaught: hoursSpent }, { where: { id: session.mentorId } });
     await User.increment({ totalHoursLearned: hoursSpent }, { where: { id: session.learnerId } });
 
-    await Message.create({ sessionId: session.id, senderId: 0, content: 'Session completed! Please rate your experience.', type: 'system' });
+    // Fetch mentor and learner details for emails
+    const mentor = await User.findByPk(session.mentorId);
+    const learner = await User.findByPk(session.learnerId);
+
+    // Transfer Locked Credits to Mentor
+    if (session.isMentorSession && session.creditsLocked > 0) {
+      const learnerWallet = await Wallet.findOne({ where: { userId: session.learnerId } });
+      const mentorWallet = await Wallet.findOne({ where: { userId: session.mentorId } });
+      
+      if (learnerWallet && mentorWallet) {
+        // Remove from learner's locked balance
+        learnerWallet.locked -= session.creditsLocked;
+        await learnerWallet.save();
+        
+        // Add to mentor's balance
+        mentorWallet.balance += session.creditsLocked;
+        await mentorWallet.save();
+
+        // Create transaction record for mentor
+        await Transaction.create({
+          userId: session.mentorId,
+          type: 'earned',
+          amount: session.creditsLocked,
+          description: `Earned credits for session: ${session.topic}`,
+          balanceAfter: mentorWallet.balance,
+        });
+
+        // Send Credits Earned Email to Mentor
+        await sendCreditsEarnedEmail(mentor.email, mentor.fullName, learner.fullName, session.creditsLocked, mentorWallet.balance);
+      }
+    }
+
+    await Message.create({ sessionId: session.id, senderId: req.userId, content: 'Session completed! Please rate your experience.', type: 'system' });
 
     const notifData = [session.mentorId, session.learnerId].map(userId => ({
       userId,
@@ -262,6 +298,10 @@ const completeSession = async (req, res) => {
       linkTo: `/session/${session.id}`,
     }));
     await Notification.bulkCreate(notifData);
+
+    // Send Session Completed Emails
+    if (mentor) await sendSessionCompletedEmail(mentor.email, mentor.fullName, session.topic);
+    if (learner) await sendSessionCompletedEmail(learner.email, learner.fullName, session.topic);
 
     res.json({ message: 'Session completed', session });
   } catch (error) {
